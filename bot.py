@@ -217,8 +217,8 @@ def verify_utr(msg):
         )
 
         bot.send_message(user_id,
-                          f"🎉 *Payment Verified Automatically!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.",
-                          parse_mode="Markdown")
+                  f"🎉 <b>Payment Verified Automatically!</b>\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.",
+                  parse_mode="HTML")
         bot.send_message(ADMIN_ID, f"✅ Auto-approved user {user_id} for {mins} mins via UTR {utr} (₹{paid_amount}).")
         del pending_payments[user_id]
     except Exception as e:
