@@ -1,4 +1,5 @@
 import os
+import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
@@ -25,12 +26,17 @@ MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
 UPI_ID = os.getenv('UPI_ID')
 CONTACT_USERNAME = os.getenv('CONTACT_USERNAME')
+BHARATPE_TOKEN = os.getenv('BHARATPE_TOKEN')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 client = MongoClient(MONGO_URI)
 db = client['sub_management']
 channels_col = db['channels']
 users_col = db['users']
+
+# In-memory tracker: user_id -> {"ch_id":.., "mins":.., "price":..}
+# Holds plan info while we wait for the user to send their UTR
+pending_payments = {}
 
 # --- ADMIN LOGIC ---
 
@@ -136,6 +142,12 @@ def user_pays(call):
                    caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.", 
                    reply_markup=markup, parse_mode="Markdown")
 
+    # Track this pending payment so we can auto-verify if the user sends a UTR
+    pending_payments[call.from_user.id] = {"ch_id": int(ch_id), "mins": mins, "price": int(price)}
+    bot.send_message(call.message.chat.id,
+                      "💡 *Tip:* After paying, send your 12-digit UTR/transaction reference number here for instant auto-approval — or tap 'I Have Paid' for manual review.",
+                      parse_mode="Markdown")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
 def admin_notify(call):
     _, ch_id, mins = call.data.split('_')
@@ -152,6 +164,65 @@ def admin_notify(call):
     
     u_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
     bot.send_message(call.message.chat.id, "✅ Your payment request has been sent. Please wait for Admin approval.", reply_markup=u_markup)
+
+# --- BHARATPE UTR AUTO-VERIFICATION ---
+
+@bot.message_handler(func=lambda msg: msg.from_user.id in pending_payments and msg.text and msg.text.strip().isdigit())
+def verify_utr(msg):
+    user_id = msg.from_user.id
+    utr = msg.text.strip()
+    plan = pending_payments.get(user_id)
+    if not plan:
+        return
+
+    # Prevent the same UTR being reused across different approvals
+    if users_col.find_one({"used_utr": utr}):
+        bot.reply_to(msg, "⚠️ This UTR has already been used for a previous approval.")
+        return
+
+    try:
+        resp = requests.get(
+            "https://bharatpe-payment-checker.vercel.app/check",
+            params={"token": BHARATPE_TOKEN, "utr": utr},
+            timeout=10
+        )
+        data = resp.json()
+    except Exception as e:
+        bot.reply_to(msg, "⚠️ Verification service unavailable right now. Please tap 'I Have Paid' above for manual review instead.")
+        bot.send_message(ADMIN_ID, f"UTR check failed for user {user_id}, utr {utr}: {e}")
+        return
+
+    if not data.get("success"):
+        bot.reply_to(msg, f"❌ {data.get('message', 'UTR not found yet. Wait a minute and resend, or tap I Have Paid for manual review.')}")
+        return
+
+    paid_amount = data["data"]["amount"]
+    if int(paid_amount) != int(plan["price"]):
+        bot.reply_to(msg, f"⚠️ Amount mismatch — paid ₹{paid_amount}, expected ₹{plan['price']}. Contact admin.")
+        bot.send_message(ADMIN_ID, f"⚠️ Amount mismatch: user {user_id}, paid ₹{paid_amount}, expected ₹{plan['price']}, utr {utr}")
+        return
+
+    # Verified — approve immediately, same logic as approve_now
+    ch_id, mins = plan["ch_id"], int(plan["mins"])
+    try:
+        expiry_datetime = datetime.now() + timedelta(minutes=mins)
+        expiry_ts = int(expiry_datetime.timestamp())
+
+        link = bot.create_chat_invite_link(ch_id, member_limit=1, expire_date=expiry_ts)
+
+        users_col.update_one(
+            {"user_id": user_id, "channel_id": ch_id},
+            {"$set": {"expiry": expiry_datetime.timestamp(), "used_utr": utr}},
+            upsert=True
+        )
+
+        bot.send_message(user_id,
+                          f"🎉 *Payment Verified Automatically!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.",
+                          parse_mode="Markdown")
+        bot.send_message(ADMIN_ID, f"✅ Auto-approved user {user_id} for {mins} mins via UTR {utr} (₹{paid_amount}).")
+        del pending_payments[user_id]
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ Error during auto-approval: {e}")
 
 # --- APPROVAL & EXPIRY ---
 
@@ -171,6 +242,7 @@ def approve_now(call):
         
         bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.", parse_mode="Markdown")
         bot.edit_message_text(f"✅ Approved user {u_id} for {mins} mins.", call.message.chat.id, call.message.message_id)
+        pending_payments.pop(u_id, None)
         
     except Exception as e:
         bot.send_message(ADMIN_ID, f"❌ Error: {e}")
@@ -182,6 +254,7 @@ def reject_now(call):
     try:
         bot.send_message(u_id, "❌ Your payment could not be verified. Please contact admin if you believe this is a mistake.")
         bot.edit_message_text(f"❌ Rejected payment for user {u_id}.", call.message.chat.id, call.message.message_id)
+        pending_payments.pop(u_id, None)
     except Exception as e:
         bot.send_message(ADMIN_ID, f"❌ Error: {e}")
 
