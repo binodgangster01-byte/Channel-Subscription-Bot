@@ -1,0 +1,50 @@
+services:
+  # The Telegram bot itself. Uses long-polling + the Flask keep-alive
+  # server in bot.py so it satisfies Render's free Web Service tier
+  # (needs something bound to a port). Pair this with an UptimeRobot
+  # monitor hitting the service URL every 5-10 minutes so Render doesn't
+  # spin it down after 15 minutes idle.
+  - type: web
+    name: coupon-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PAYMENT_PROVIDER_TOKEN
+        sync: false
+      - key: CURRENCY
+        value: INR
+      - key: ADMIN_IDS
+        sync: false
+      - key: DB_PATH
+        value: coupon_bot.db
+      - key: BHARATPE_UPI_ID
+        sync: false
+      - key: BHARATPE_PAYEE_NAME
+        sync: false
+      - key: BHARATPE_WEBHOOK_SECRET
+        sync: false
+      - key: FORCE_JOIN_CHANNELS
+        sync: false
+      - key: SUPPORT_USERNAME
+        sync: false
+
+  # Optional: only needed once you have real BharatPe merchant webhook
+  # docs and want automatic payment verification (see README). Delete
+  # this block if you're only using Telegram Payments / admin approval.
+  - type: web
+    name: coupon-bot-webhook
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python webhook_server.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BHARATPE_WEBHOOK_SECRET
+        sync: false
+      - key: DB_PATH
+        value: coupon_bot.db
