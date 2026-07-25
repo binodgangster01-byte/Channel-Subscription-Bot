@@ -1,0 +1,30 @@
+# Render Blueprint — deploy this repo in one click via
+# https://render.com/docs/blueprint-spec (New -> Blueprint -> point at your repo).
+#
+# IMPORTANT: this uses the FREE "Web Service" plan, which has NO persistent
+# disk — its filesystem resets on every restart/redeploy/sleep-wake cycle.
+# That means shop.db (your orders + stock) gets wiped periodically. This
+# config is for trying the bot out, not for running a real shop with real
+# money. See the "Free tier storage warning" section in README.md before
+# you rely on this for anything real.
+services:
+  - type: web
+    name: coupon-shop-bot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: UPI_ID
+        sync: false
+      - key: SHOP_NAME
+        value: "My Coupon Shop"
+      - key: QR_VALID_MINUTES
+        value: "10"
